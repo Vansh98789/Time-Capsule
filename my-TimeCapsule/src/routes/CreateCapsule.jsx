@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { useContractWrite, usePrepareContractWrite, useWaitForTransaction } from "wagmi";
+import { useWriteContract, useWaitForTransactionReceipt } from "wagmi";
 import { parseEther } from "viem";
 
 function CreateCapsule() {
@@ -27,8 +27,6 @@ function CreateCapsule() {
     }
   ];
   
- 
-  
   const [ethAmount, setEthAmount] = useState("");
   const [ipfsCID, setIpfsCID] = useState(""); 
   const [unlockTime, setUnlockTime] = useState("");
@@ -38,49 +36,35 @@ function CreateCapsule() {
   const [txHash, setTxHash] = useState("");
   const [capsuleData, setCapsuleData] = useState(null);
 
-
-
-
-
-
-
-
-  const { config } = usePrepareContractWrite({
-    address: contractAddress,
-    abi: abi,
-    functionName: "createCapsule",
-    args: [ipfsCID, unlockTime ? parseInt(unlockTime) : 0],
-    value: ethAmount ? parseEther(ethAmount) : parseEther("0"),
-    enabled: Boolean(ipfsCID && unlockTime && ethAmount),
-  });
-
-  const { write: createCapsule, isLoading: isWriteLoading } = useContractWrite({
-    ...config,
-    onSuccess(data) {
-      setTxHash(data.hash);
-      setMessage(`Capsule creation transaction sent! Hash: ${data.hash}`);
-    },
-    onError(error) {
-      console.error("Contract write error:", error);
-      setMessage(`Error creating capsule: ${error.message}`);
+  const { writeContract, isPending: isWriteLoading } = useWriteContract({
+    mutation: {
+      onSuccess: (hash) => {
+        setTxHash(hash);
+        setMessage(`Capsule creation transaction sent! Hash: ${hash}`);
+      },
+      onError: (error) => {
+        console.error("Contract write error:", error);
+        setMessage(`Error creating capsule: ${error.message}`);
+      }
     }
   });
 
-  const { isLoading: isWaitingForTx } = useWaitForTransaction({
+  const { isLoading: isWaitingForTx } = useWaitForTransactionReceipt({
     hash: txHash,
-    enabled: Boolean(txHash),
-    onSuccess(receipt) {
+    query: {
+      enabled: Boolean(txHash),
+    },
+    onSuccess: (receipt) => {
       console.log("Transaction confirmed:", receipt);  
-      const capsuleCreatedTopic = "0x94c04aecc42f013fcb329d54ab685a53f3a2a84902997bdbb2addc2af8e5b9e3"; //  keccak256 hash of "CapsuleCreated(uint256,address,uint256)"
+      const capsuleCreatedTopic = "0x94c04aecc42f013fcb329d54ab685a53f3a2a84902997bdbb2addc2af8e5b9e3";
       
       const capsuleCreatedLog = receipt.logs.find(log => 
         log.topics[0] === capsuleCreatedTopic
       );
 
       if (capsuleCreatedLog) {
-        
         const capsuleId = parseInt(capsuleCreatedLog.topics[1], 16);
-        const owner = `0x${capsuleCreatedLog.topics[2].slice(26)}`; // Remove padding
+        const owner = `0x${capsuleCreatedLog.topics[2].slice(26)}`; 
         const unlockTimestamp = parseInt(capsuleCreatedLog.data, 16);
 
         const capsuleInfo = {
@@ -88,6 +72,7 @@ function CreateCapsule() {
           owner: owner,
           unlockTime: unlockTimestamp,
           unlockDate: new Date(unlockTimestamp * 1000).toLocaleString(),
+          ethAmount: ethAmount
         };
 
         setCapsuleData(capsuleInfo);
@@ -96,23 +81,15 @@ function CreateCapsule() {
         setMessage("Transaction confirmed but couldn't find capsule creation event");
       }
     },
-    onError(error) {
+    onError: (error) => {
       console.error("Transaction failed:", error);
       setMessage(`Transaction failed: ${error.message}`);
     }
   });
 
-
-
-
-
-
-
   const handleFileChange = (e) => {
     setFile(e.target.files[0]);
   };
-
-
 
   const handleUpload = async () => {
     if (!file) {
@@ -140,15 +117,14 @@ function CreateCapsule() {
       const data = await res.json();
       const cid = data.cid;
       setIpfsCID(cid);
-      setMessage(` File uploaded! CID: ${cid}`);
+      setMessage(`File uploaded! CID: ${cid}`);
     } catch (err) {
       console.error("Upload error:", err);
-      setMessage(` Failed to upload file: ${err.message}`);
+      setMessage(`Failed to upload file: ${err.message}`);
     } finally {
       setIsLoading(false);
     }
   };
-
 
   const handleSubmit = async () => {
     if (!ipfsCID || !unlockTime || !ethAmount) {
@@ -156,15 +132,20 @@ function CreateCapsule() {
       return;
     }
 
-    if (!createCapsule) {
-      setMessage("Contract write not ready. Please check your wallet connection.");
-      return;
-    }
-
     try {
       setCapsuleData(null);
       setTxHash("");
-      createCapsule();
+      
+      // Calculate unlock time as timestamp (current time + seconds)
+      const unlockTimestamp = Math.floor(Date.now() / 1000) + parseInt(unlockTime);
+      
+      writeContract({
+        address: contractAddress,
+        abi: abi,
+        functionName: "createCapsule",
+        args: [ipfsCID, unlockTimestamp],
+        value: parseEther(ethAmount),
+      });
     } catch (err) {
       console.error("Submit error:", err);
       setMessage(`Error: ${err.message}`);
@@ -187,17 +168,15 @@ function CreateCapsule() {
 
       {message && (
         <div className={`text-sm p-3 rounded border-l-4 ${
-          message.includes("NO") || message.includes("Error") || message.includes("Failed") 
+          message.includes("Error") || message.includes("Failed") 
             ? "text-red-700 bg-red-50 border-red-400" 
-            : message.includes(" Yes")
+            : message.includes("successfully") || message.includes("uploaded")
             ? "text-green-700 bg-green-50 border-green-400"
             : "text-blue-700 bg-blue-50 border-blue-400"
         }`}>
           {message}
         </div>
       )}
-
-
 
       {capsuleData && (
         <div className="bg-green-50 border border-green-200 rounded-lg p-4 space-y-2">
@@ -208,7 +187,14 @@ function CreateCapsule() {
             <div><strong>Unlock Date:</strong> {capsuleData.unlockDate}</div>
             <div><strong>ETH Locked:</strong> {capsuleData.ethAmount} ETH</div>
             <div><strong>Transaction:</strong> 
-             
+              <a 
+                href={`https://etherscan.io/tx/${txHash}`} 
+                target="_blank" 
+                rel="noopener noreferrer"
+                className="text-blue-600 hover:underline ml-1"
+              >
+                View on Etherscan
+              </a>
             </div>
           </div>
           <button 
@@ -234,6 +220,9 @@ function CreateCapsule() {
               className="w-full p-2 border rounded focus:ring-2 focus:ring-blue-500"
               min="1"
             />
+            <div className="text-xs text-gray-500 mt-1">
+              Common values: 3600 (1 hour), 86400 (1 day), 604800 (1 week)
+            </div>
           </div>
 
           <div>
@@ -254,6 +243,12 @@ function CreateCapsule() {
           >
             {isLoading ? "Uploading..." : "Upload File to IPFS"}
           </button>
+
+          {ipfsCID && (
+            <div className="text-sm text-green-600">
+              ✅ File uploaded to IPFS: {ipfsCID.slice(0, 20)}...
+            </div>
+          )}
 
           <div>
             <label className="block text-sm font-medium mb-1">
@@ -282,8 +277,6 @@ function CreateCapsule() {
               : "Create Time Capsule"
             }
           </button>
-
-         
         </>
       )}
     </div>
